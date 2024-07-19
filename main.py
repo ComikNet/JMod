@@ -1,24 +1,25 @@
+import asyncio
 import hashlib
 import json
+from re import S
 import time
 from abc import ABC, abstractmethod
 from enum import Enum
 from http.cookies import BaseCookie
 from typing import Any
+from venv import logger
 
 import aiohttp
+from common import multi_thread_launcher
+from curl_cffi import requests as postman
 from fastapi import HTTPException
-from jmcomic import JmCryptoTool
+from jmcomic import JmcomicText, JmCryptoTool, JmOption
 from yarl import URL
 
 from Models.comic import BaseComicInfo
 from Models.plugins import BasePlugin, IAuth
 from Models.response import StandardResponse
-from Models.user import User, UserData
-from Services.Modulator.manager import PluginUtils
-
-# Temporary url config
-api_url = "https://www.cdn-eldenringproxy.xyz"
+from Models.user import UserData
 
 
 class AsyncRequests(ABC):
@@ -33,7 +34,7 @@ class AsyncRequests(ABC):
         base_url: str,
         cookies: BaseCookie[str] | None = None,
         conn_timeout: int = 15,
-        read_timeout: int = 45,
+        read_timeout: int = 20,
     ) -> None:
         self.base_url = base_url
         self.session = aiohttp.ClientSession(
@@ -222,16 +223,67 @@ class FavorSortMode(Enum):
 
 
 class JMod(BasePlugin, IAuth):
+    __src__ = "jm"
+
     def on_load(self) -> bool:
-        print("Hello, world!")
+        _domain_set = set[str](
+            [
+                "https://www.cdn-eldenringproxy.xyz",
+                "https://cn-appdata.jmapiproxy2.cc",
+                "https://www.jmapinodeudzn.xyz",
+                "https://www.jmapinode.xyz",
+            ]
+        )
+
+        _domain_status = dict[str, tuple[bool, int]]()
+
+        def _test_domain(url: str):
+
+            time_start = time.time()
+            try:
+
+                async def _test():
+                    req = JMRequests(url)
+                    res = await req.get(
+                        "/album", params={"comicName": "", "id": "123456"}
+                    )
+                    await req.close()
+                    if res.status_code != 200:
+                        raise Exception("Invalid response from server")
+                    else:
+                        _domain_status[url] = (
+                            True,
+                            int((time.time() - time_start) * 1000),
+                        )
+
+                asyncio.run(_test())
+
+            except:
+                _domain_status[url] = (False, -1)
+
+        multi_thread_launcher(iter_objs=_domain_set, apply_each_obj_func=_test_domain)
+
+        fastest = ("", (False, 99999))
+        for domain, status in _domain_status.items():
+            if status[0] and status[1] < fastest[1][1]:
+                fastest = (domain, status)
+        if not fastest[1][0]:
+            logger.error("JMod failed to get a valid api source")
+            return False
+
+        logger.info(
+            f"JMod will use {fastest[0]} as the api source, the latency is {fastest[1][1]}ms"
+        )
+        self.api_url = fastest[0]
+
         return True
 
     async def login(
         self, body: dict[str, str], user_data: UserData
     ) -> StandardResponse:
-        req = JMRequests(api_url, user_data.get_src_cookies("jm"))
+        req = JMRequests(self.api_url, user_data.get_src_cookies(self.__src__))
         res = await req.post("/login", body)
-        user_data.plugin_cookies["jm"] = req.filter_session_cookies("AVS")
+        user_data.set_src_cookies(self.__src__, req.filter_session_cookies("AVS"))
         await req.close()
 
         return res
@@ -242,16 +294,15 @@ class JMod(BasePlugin, IAuth):
         data: dict[str, str] | None = None,
     ) -> StandardResponse:
         if data is None:
-            page = "1"
-            sort_mode = FavorSortMode.RecordTime
-        else:
-            page = data.get("page", "1")
-            sort_mode = FavorSortMode(data.get("sort", FavorSortMode.RecordTime))
+            data = dict()
 
-        req = JMRequests(api_url, user_data.get_src_cookies("jm"))
+        page = data.get("page", "1")
+        sort_mode = FavorSortMode(data.get("sort", FavorSortMode.RecordTime))
+
+        req = JMRequests(self.api_url, user_data.get_src_cookies(self.__src__))
         res = await req.get("/favorite", params={"page": page, "sort": sort_mode.value})
         await req.close()
-
+        
         return res
 
     def search(self, keyword: str) -> list[BaseComicInfo]:
