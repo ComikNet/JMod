@@ -1,0 +1,14 @@
+[project]
+name = "JMod"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = ["httpx>=0.28.1", "jmcomic>=2.5.32"]
+
+[tool.cnm]
+source = ["jm"]
+version = "0.3.1"
+
+[tool.cnm.service]
+login = ["username", "password"]
